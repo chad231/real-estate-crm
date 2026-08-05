@@ -29,12 +29,21 @@ const sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 const money = (n) => (n || n === 0) ? "$" + Number(n).toLocaleString() : "";
 const cls = (...a) => a.filter(Boolean).join(" ");
 const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const commissionOf = (d) => (Number(d.value) || 0) * (Number(d.commission_pct) || 0) / 100;
+
+const CONTACT_TYPES = ["lead", "buyer", "seller", "tenant", "investor/developer", "landlord", "vendor"];
+const PROP_STATUS = ["active", "pending", "sold"];
+const SPRINKLER = ["none", "standard", "ESFR"];
+const PIPELINE_STAGES = ["new", "showing", "offer", "contract"];
 
 const BADGE = {
   lead: "bg-amber-100 text-amber-700", buyer: "bg-sky-100 text-sky-700", seller: "bg-violet-100 text-violet-700",
+  tenant: "bg-teal-100 text-teal-700", "investor/developer": "bg-emerald-100 text-emerald-700",
+  landlord: "bg-fuchsia-100 text-fuchsia-700", vendor: "bg-slate-100 text-slate-600",
   new: "bg-slate-100 text-slate-600", active: "bg-emerald-100 text-emerald-700", closed: "bg-slate-200 text-slate-500",
   pending: "bg-amber-100 text-amber-700", sold: "bg-emerald-100 text-emerald-700",
   showing: "bg-sky-100 text-sky-700", offer: "bg-amber-100 text-amber-700", contract: "bg-violet-100 text-violet-700",
+  sale: "bg-indigo-100 text-indigo-700", lease: "bg-teal-100 text-teal-700",
 };
 const Badge = ({ v }) => v ? <span className={cls("text-xs rounded-full px-2 py-0.5 font-medium capitalize", BADGE[v] || "bg-slate-100 text-slate-600")}>{v}</span> : null;
 
@@ -50,11 +59,12 @@ function Select({ label, children, ...props }) {
   return (
     <label className="block text-sm">
       <span className="text-slate-500 font-medium">{label}</span>
-      <select {...props} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:border-indigo-500 focus:outline-none">
-        {children}
-      </select>
+      <select {...props} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:border-indigo-500 focus:outline-none">{children}</select>
     </label>
   );
+}
+function Check({ label, ...props }) {
+  return <label className="flex items-center gap-2 text-sm mt-1"><input type="checkbox" {...props} className="h-4 w-4 accent-indigo-600" /><span className="text-slate-600">{label}</span></label>;
 }
 const Btn = (p) => <button {...p} className={cls("rounded-lg bg-indigo-600 text-white px-4 py-2 text-sm font-semibold hover:bg-indigo-700 shadow-sm transition", p.className)} />;
 const Card = ({ children, className, ...rest }) => <div {...rest} className={cls("bg-white rounded-xl shadow-sm border border-slate-100", className)}>{children}</div>;
@@ -62,24 +72,19 @@ const Card = ({ children, className, ...rest }) => <div {...rest} className={cls
 // ---------- data hook ----------
 function useTable(name, order = "created_at") {
   const [rows, setRows] = useState([]);
-  const load = async () => {
-    const { data } = await sb.from(name).select("*").order(order, { ascending: false });
-    setRows(data || []);
-  };
+  const load = async () => { const { data } = await sb.from(name).select("*").order(order, { ascending: false }); setRows(data || []); };
   useEffect(() => { load(); }, []);
   const add = async (row) => { await sb.from(name).insert(row); load(); };
   const update = async (id, patch) => { await sb.from(name).update(patch).eq("id", id); load(); };
   const remove = async (id) => { await sb.from(name).delete().eq("id", id); load(); };
   return { rows, add, update, remove, reload: load };
 }
-const nameById = (list, id) => (list.find(x => x.id === id) || {});
+const byId = (list, id) => (list.find(x => x.id === id) || {});
+const num = (v) => v === "" || v == null ? null : v;
 
 // ---------- Modal ----------
 function Modal({ children, onClose }) {
-  useEffect(() => {
-    const h = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
-  }, []);
+  useEffect(() => { const h = (e) => e.key === "Escape" && onClose(); window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, []);
   return (
     <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg my-6" onClick={e => e.stopPropagation()}>{children}</div>
@@ -87,40 +92,32 @@ function Modal({ children, onClose }) {
   );
 }
 
-// ---------- Activity log (reusable) ----------
+// ---------- Activity log ----------
 const ACT_TYPES = ["call", "email", "outreach", "meeting", "note"];
 const ACT_ICON = { call: "📞", email: "✉️", outreach: "📣", meeting: "🤝", note: "📝" };
 function ActivityLog({ column, id }) {
   const [rows, setRows] = useState([]);
   const [type, setType] = useState("call");
   const [body, setBody] = useState("");
-  const load = async () => {
-    const { data } = await sb.from("activities").select("*").eq(column, id).order("created_at", { ascending: false });
-    setRows(data || []);
-  };
+  const load = async () => { const { data } = await sb.from("activities").select("*").eq(column, id).order("created_at", { ascending: false }); setRows(data || []); };
   useEffect(() => { load(); }, [id]);
   const addAct = async () => { if (!body.trim()) return; await sb.from("activities").insert({ [column]: id, type, body }); setBody(""); setType("call"); load(); };
   const del = async (aid) => { await sb.from("activities").delete().eq("id", aid); load(); };
-
   return (
     <div>
       <div className="flex gap-2">
         <select value={type} onChange={e => setType(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-2 text-sm bg-white">
           {ACT_TYPES.map(t => <option key={t} value={t}>{ACT_ICON[t]} {t}</option>)}
         </select>
-        <input value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === "Enter" && addAct()}
-          placeholder="Log a call, email, note…" className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+        <input value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === "Enter" && addAct()} placeholder="Log a call, email, note…" className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" />
         <Btn onClick={addAct}>Log</Btn>
       </div>
-      <div className="mt-4 space-y-3 max-h-72 overflow-y-auto pr-1">
-        {rows.length === 0 && <p className="text-sm text-slate-400">No activity yet. Log your first call or email above.</p>}
+      <div className="mt-4 space-y-3 max-h-64 overflow-y-auto pr-1">
+        {rows.length === 0 && <p className="text-sm text-slate-400">No activity yet.</p>}
         {rows.map(a => (
           <div key={a.id} className="flex gap-3 group">
             <div className="text-lg leading-none pt-0.5">{ACT_ICON[a.type] || "📝"}</div>
-            <div className="flex-1">
-              <div className="text-sm">{a.body}</div>
-              <div className="text-xs text-slate-400 capitalize">{a.type} · {when(a.created_at)}</div>
-            </div>
+            <div className="flex-1"><div className="text-sm">{a.body}</div><div className="text-xs text-slate-400 capitalize">{a.type} · {when(a.created_at)}</div></div>
             <button onClick={() => del(a.id)} className="text-slate-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100">✕</button>
           </div>
         ))}
@@ -129,10 +126,49 @@ function ActivityLog({ column, id }) {
   );
 }
 
+// ---------- Contact <-> Property links ----------
+function Links({ fixedCol, fixedId, addCol, options, labelKey }) {
+  const [rows, setRows] = useState([]);
+  const [sel, setSel] = useState("");
+  const [role, setRole] = useState("");
+  const load = async () => { const { data } = await sb.from("contact_properties").select("*").eq(fixedCol, fixedId); setRows(data || []); };
+  useEffect(() => { load(); }, [fixedId]);
+  const addLink = async () => { if (!sel) return; await sb.from("contact_properties").insert({ [fixedCol]: fixedId, [addCol]: sel, role: role || null }); setSel(""); setRole(""); load(); };
+  const del = async (lid) => { await sb.from("contact_properties").delete().eq("id", lid); load(); };
+  return (
+    <div>
+      <div className="flex gap-2">
+        <select value={sel} onChange={e => setSel(e.target.value)} className="flex-1 rounded-lg border border-slate-300 px-2 py-2 text-sm bg-white">
+          <option value="">— add —</option>
+          {options.map(o => <option key={o.id} value={o.id}>{o[labelKey]}</option>)}
+        </select>
+        <input value={role} onChange={e => setRole(e.target.value)} placeholder="role (owner…)" className="w-28 rounded-lg border border-slate-300 px-2 py-2 text-sm" />
+        <Btn onClick={addLink}>Link</Btn>
+      </div>
+      <div className="mt-3 space-y-1">
+        {rows.length === 0 && <p className="text-sm text-slate-400">Nothing linked yet.</p>}
+        {rows.map(l => {
+          const o = byId(options, l[addCol]);
+          return (
+            <div key={l.id} className="flex items-center justify-between text-sm py-1 group">
+              <span>🔗 {o[labelKey] || "—"} {l.role && <span className="text-slate-400">· {l.role}</span>}</span>
+              <button onClick={() => del(l.id)} className="text-slate-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100">✕</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Contact detail ----------
 function ContactDetail({ contact, onClose }) {
   const [deals, setDeals] = useState([]);
-  useEffect(() => { sb.from("deals").select("*").eq("contact_id", contact.id).then(({ data }) => setDeals(data || [])); }, []);
+  const [props, setProps] = useState([]);
+  useEffect(() => {
+    sb.from("deals").select("*").eq("contact_id", contact.id).then(({ data }) => setDeals(data || []));
+    sb.from("properties").select("id,address").then(({ data }) => setProps(data || []));
+  }, []);
   return (
     <Modal onClose={onClose}>
       <div className="p-5 border-b border-slate-100 flex items-start justify-between">
@@ -143,10 +179,14 @@ function ContactDetail({ contact, onClose }) {
         </div>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
       </div>
+      <div className="px-5 pt-4">
+        <div className="text-xs font-semibold uppercase text-slate-400 mb-1">Linked properties</div>
+        <Links fixedCol="contact_id" fixedId={contact.id} addCol="property_id" options={props} labelKey="address" />
+      </div>
       {deals.length > 0 && (
         <div className="px-5 pt-4">
           <div className="text-xs font-semibold uppercase text-slate-400 mb-1">Deals</div>
-          {deals.map(d => <div key={d.id} className="text-sm flex justify-between py-1"><span>💼 {d.title}</span><span className="text-slate-400 capitalize">{d.stage} {d.value ? "· " + money(d.value) : ""}</span></div>)}
+          {deals.map(d => <div key={d.id} className="text-sm flex justify-between py-1"><span>💼 {d.title}</span><span className="text-slate-400 capitalize">{d.stage}</span></div>)}
         </div>
       )}
       <div className="p-5">
@@ -160,21 +200,50 @@ function ContactDetail({ contact, onClose }) {
 // ---------- Property detail ----------
 function PropertyDetail({ property, onClose }) {
   const [deals, setDeals] = useState([]);
-  useEffect(() => { sb.from("deals").select("*").eq("property_id", property.id).then(({ data }) => setDeals(data || [])); }, []);
+  const [contacts, setContacts] = useState([]);
+  useEffect(() => {
+    sb.from("deals").select("*").eq("property_id", property.id).then(({ data }) => setDeals(data || []));
+    sb.from("contacts").select("id,name").then(({ data }) => setContacts(data || []));
+  }, []);
+  const specs = [
+    ["Clear height", property.clear_height && property.clear_height + "'"],
+    ["Dock doors", property.dock_doors],
+    ["Drive-ins", property.drive_ins],
+    ["Truck court", property.truck_court && property.truck_court + "'"],
+    ["Trailer parking", property.trailer_parking],
+    ["Yard", property.yard_acres && property.yard_acres + " ac"],
+    ["Power", property.power],
+    ["Sprinkler", property.sprinkler && property.sprinkler !== "none" ? property.sprinkler : null],
+    ["Zoning", property.zoning],
+    ["Gated", property.gated ? "Yes" : null],
+    ["Rail served", property.rail_served ? "Yes" : null],
+  ].filter(s => s[1]);
   return (
     <Modal onClose={onClose}>
       <div className="p-5 border-b border-slate-100 flex items-start justify-between">
         <div>
           <div className="text-lg font-bold flex items-center gap-2 flex-wrap">{property.address} <Badge v={property.status} /></div>
           <div className="text-sm text-slate-500">{[property.city, property.state, property.zip].filter(Boolean).join(", ")}</div>
-          <div className="text-sm text-slate-600 mt-1 font-medium">{money(property.price)} <span className="font-normal text-slate-400">{property.beds ? "· " + property.beds + " bd" : ""} {property.baths ? "· " + property.baths + " ba" : ""} {property.sqft ? "· " + property.sqft + " sqft" : ""}</span></div>
+          <div className="text-sm text-slate-600 mt-1 font-medium">{money(property.price)} <span className="font-normal text-slate-400">{property.sqft ? "· " + Number(property.sqft).toLocaleString() + " sqft" : ""}</span></div>
         </div>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+      </div>
+      {specs.length > 0 && (
+        <div className="px-5 pt-4">
+          <div className="text-xs font-semibold uppercase text-slate-400 mb-1">Building specs</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+            {specs.map(s => <div key={s[0]} className="flex justify-between"><span className="text-slate-400">{s[0]}</span><span className="font-medium">{s[1]}</span></div>)}
+          </div>
+        </div>
+      )}
+      <div className="px-5 pt-4">
+        <div className="text-xs font-semibold uppercase text-slate-400 mb-1">Linked contacts</div>
+        <Links fixedCol="property_id" fixedId={property.id} addCol="contact_id" options={contacts} labelKey="name" />
       </div>
       {deals.length > 0 && (
         <div className="px-5 pt-4">
           <div className="text-xs font-semibold uppercase text-slate-400 mb-1">Deals</div>
-          {deals.map(d => <div key={d.id} className="text-sm flex justify-between py-1"><span>💼 {d.title}</span><span className="text-slate-400 capitalize">{d.stage} {d.value ? "· " + money(d.value) : ""}</span></div>)}
+          {deals.map(d => <div key={d.id} className="text-sm flex justify-between py-1"><span>💼 {d.title}</span><span className="text-slate-400 capitalize">{d.stage}</span></div>)}
         </div>
       )}
       <div className="p-5">
@@ -194,27 +263,19 @@ function Contacts() {
   const [open, setOpen] = useState(null);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
-
-  const submit = () => {
-    if (!f.name) return;
-    if (editing) { update(editing, f); setEditing(null); } else { add(f); }
-    setF(blank);
-  };
+  const submit = () => { if (!f.name) return; editing ? update(editing, f) : add(f); setEditing(null); setF(blank); };
   const startEdit = (r) => { setEditing(r.id); setF({ name: r.name, email: r.email || "", phone: r.phone || "", type: r.type, status: r.status, notes: r.notes || "" }); window.scrollTo(0, 0); };
-  const shown = rows.filter(r =>
-    (filter === "all" || r.type === filter) &&
-    (r.name + (r.email || "") + (r.phone || "")).toLowerCase().includes(q.toLowerCase()));
-
+  const shown = rows.filter(r => (filter === "all" || r.type === filter) && (r.name + (r.email || "") + (r.phone || "")).toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="grid lg:grid-cols-3 gap-5">
-      {open && <ContactDetail contact={rows.find(r => r.id === open) || open} onClose={() => setOpen(null)} />}
+      {open && <ContactDetail contact={rows.find(r => r.id === open)} onClose={() => setOpen(null)} />}
       <Card className="p-5 space-y-3 h-fit">
         <h3 className="font-semibold">{editing ? "Edit contact" : "Add contact"}</h3>
         <Field label="Name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />
         <Field label="Email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} />
         <Field label="Phone" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
         <div className="grid grid-cols-2 gap-2">
-          <Select label="Type" value={f.type} onChange={e => setF({ ...f, type: e.target.value })}>{["lead", "buyer", "seller"].map(o => <option key={o}>{o}</option>)}</Select>
+          <Select label="Type" value={f.type} onChange={e => setF({ ...f, type: e.target.value })}>{CONTACT_TYPES.map(o => <option key={o}>{o}</option>)}</Select>
           <Select label="Status" value={f.status} onChange={e => setF({ ...f, status: e.target.value })}>{["new", "active", "closed"].map(o => <option key={o}>{o}</option>)}</Select>
         </div>
         <Field label="Notes" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
@@ -223,11 +284,10 @@ function Contacts() {
           {editing && <button onClick={() => { setEditing(null); setF(blank); }} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100">Cancel</button>}
         </div>
       </Card>
-
       <div className="lg:col-span-2 space-y-3">
         <div className="flex flex-wrap gap-2">
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search contacts…" className="flex-1 min-w-[160px] rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          <Select value={filter} onChange={e => setFilter(e.target.value)}>{["all", "lead", "buyer", "seller"].map(o => <option key={o} value={o}>{o === "all" ? "All types" : o}</option>)}</Select>
+          <Select value={filter} onChange={e => setFilter(e.target.value)}><option value="all">All types</option>{CONTACT_TYPES.map(o => <option key={o} value={o}>{o}</option>)}</Select>
         </div>
         {shown.length === 0 && <p className="text-slate-400 text-sm py-6 text-center">No contacts found.</p>}
         {shown.map(r => (
@@ -235,8 +295,7 @@ function Contacts() {
             <div>
               <div className="font-medium flex items-center gap-2 flex-wrap">{r.name} <Badge v={r.type} /> <Badge v={r.status} /></div>
               <div className="text-sm text-slate-500 mt-0.5">{[r.email, r.phone].filter(Boolean).join(" · ")}</div>
-              {r.notes && <div className="text-sm text-slate-400 mt-1">{r.notes}</div>}
-              <div className="text-xs text-indigo-500 mt-1">Click to log activity →</div>
+              <div className="text-xs text-indigo-500 mt-1">Click to log activity & link →</div>
             </div>
             <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
               <button onClick={() => startEdit(r)} className="text-slate-400 hover:text-indigo-600 text-sm px-1">Edit</button>
@@ -252,24 +311,21 @@ function Contacts() {
 // ---------- Properties ----------
 function Properties() {
   const { rows, add, update, remove } = useTable("properties");
-  const blank = { address: "", city: "", state: "", zip: "", price: "", status: "active", beds: "", baths: "", sqft: "", notes: "" };
+  const blank = { address: "", city: "", state: "", zip: "", price: "", status: "active", sqft: "", notes: "",
+    clear_height: "", dock_doors: "", drive_ins: "", truck_court: "", trailer_parking: "", yard_acres: "",
+    power: "", sprinkler: "none", zoning: "", gated: false, rail_served: false };
   const [f, setF] = useState(blank);
   const [editing, setEditing] = useState(null);
   const [open, setOpen] = useState(null);
   const [q, setQ] = useState("");
-
-  const clean = (o) => ({ ...o, price: o.price || null, beds: o.beds || null, baths: o.baths || null, sqft: o.sqft || null });
-  const submit = () => {
-    if (!f.address) return;
-    if (editing) { update(editing, clean(f)); setEditing(null); } else { add(clean(f)); }
-    setF(blank);
-  };
-  const startEdit = (r) => { setEditing(r.id); setF({ address: r.address, city: r.city || "", state: r.state || "", zip: r.zip || "", price: r.price || "", status: r.status, beds: r.beds || "", baths: r.baths || "", sqft: r.sqft || "", notes: r.notes || "" }); window.scrollTo(0, 0); };
-  const shown = rows.filter(r => (r.address + (r.city || "")).toLowerCase().includes(q.toLowerCase()));
-
+  const clean = (o) => ({ ...o, price: num(o.price), sqft: num(o.sqft), clear_height: num(o.clear_height), dock_doors: num(o.dock_doors),
+    drive_ins: num(o.drive_ins), truck_court: num(o.truck_court), trailer_parking: num(o.trailer_parking), yard_acres: num(o.yard_acres) });
+  const submit = () => { if (!f.address) return; editing ? update(editing, clean(f)) : add(clean(f)); setEditing(null); setF(blank); };
+  const startEdit = (r) => { setEditing(r.id); setF({ ...blank, ...Object.fromEntries(Object.keys(blank).map(k => [k, r[k] == null ? blank[k] : r[k]])) }); window.scrollTo(0, 0); };
+  const shown = rows.filter(r => (r.address + (r.city || "") + (r.zoning || "")).toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="grid lg:grid-cols-3 gap-5">
-      {open && <PropertyDetail property={rows.find(r => r.id === open) || open} onClose={() => setOpen(null)} />}
+      {open && <PropertyDetail property={rows.find(r => r.id === open)} onClose={() => setOpen(null)} />}
       <Card className="p-5 space-y-3 h-fit">
         <h3 className="font-semibold">{editing ? "Edit property" : "Add property"}</h3>
         <Field label="Address" value={f.address} onChange={e => setF({ ...f, address: e.target.value })} />
@@ -278,30 +334,45 @@ function Properties() {
           <Field label="State" value={f.state} onChange={e => setF({ ...f, state: e.target.value })} />
           <Field label="Zip" value={f.zip} onChange={e => setF({ ...f, zip: e.target.value })} />
         </div>
-        <Field label="Price" type="number" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} />
-        <div className="grid grid-cols-3 gap-2">
-          <Field label="Beds" type="number" value={f.beds} onChange={e => setF({ ...f, beds: e.target.value })} />
-          <Field label="Baths" type="number" value={f.baths} onChange={e => setF({ ...f, baths: e.target.value })} />
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Price" type="number" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} />
           <Field label="Sqft" type="number" value={f.sqft} onChange={e => setF({ ...f, sqft: e.target.value })} />
         </div>
-        <Select label="Status" value={f.status} onChange={e => setF({ ...f, status: e.target.value })}>{["active", "pending", "sold"].map(o => <option key={o}>{o}</option>)}</Select>
+        <Select label="Status" value={f.status} onChange={e => setF({ ...f, status: e.target.value })}>{PROP_STATUS.map(o => <option key={o}>{o}</option>)}</Select>
+
+        <div className="text-xs font-semibold uppercase text-slate-400 pt-1">Industrial details</div>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Clear height (ft)" type="number" value={f.clear_height} onChange={e => setF({ ...f, clear_height: e.target.value })} />
+          <Field label="Truck court (ft)" type="number" value={f.truck_court} onChange={e => setF({ ...f, truck_court: e.target.value })} />
+          <Field label="Dock doors" type="number" value={f.dock_doors} onChange={e => setF({ ...f, dock_doors: e.target.value })} />
+          <Field label="Drive-ins" type="number" value={f.drive_ins} onChange={e => setF({ ...f, drive_ins: e.target.value })} />
+          <Field label="Trailer parking" type="number" value={f.trailer_parking} onChange={e => setF({ ...f, trailer_parking: e.target.value })} />
+          <Field label="Yard (acres)" type="number" value={f.yard_acres} onChange={e => setF({ ...f, yard_acres: e.target.value })} />
+        </div>
+        <Field label="Power (e.g. 2000A 480V/3P)" value={f.power} onChange={e => setF({ ...f, power: e.target.value })} />
+        <div className="grid grid-cols-2 gap-2">
+          <Select label="Sprinkler" value={f.sprinkler} onChange={e => setF({ ...f, sprinkler: e.target.value })}>{SPRINKLER.map(o => <option key={o}>{o}</option>)}</Select>
+          <Field label="Zoning" value={f.zoning} onChange={e => setF({ ...f, zoning: e.target.value })} />
+        </div>
+        <Check label="Gated / secured yard" checked={f.gated} onChange={e => setF({ ...f, gated: e.target.checked })} />
+        <Check label="Rail served" checked={f.rail_served} onChange={e => setF({ ...f, rail_served: e.target.checked })} />
         <Field label="Notes" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
         <div className="flex gap-2">
           <Btn onClick={submit} className="flex-1">{editing ? "Save changes" : "Add property"}</Btn>
           {editing && <button onClick={() => { setEditing(null); setF(blank); }} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100">Cancel</button>}
         </div>
       </Card>
-
       <div className="lg:col-span-2 space-y-3">
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search properties…" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search address, city, zoning…" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
         {shown.length === 0 && <p className="text-slate-400 text-sm py-6 text-center">No properties found.</p>}
         {shown.map(r => (
           <Card key={r.id} className="p-4 flex items-start justify-between hover:shadow-md transition cursor-pointer" onClick={() => setOpen(r.id)}>
             <div>
               <div className="font-medium flex items-center gap-2 flex-wrap">{r.address} <Badge v={r.status} /></div>
               <div className="text-sm text-slate-500">{[r.city, r.state, r.zip].filter(Boolean).join(", ")}</div>
-              <div className="text-sm text-slate-600 mt-1 font-medium">{money(r.price)} <span className="font-normal text-slate-400">{r.beds ? "· " + r.beds + " bd" : ""} {r.baths ? "· " + r.baths + " ba" : ""} {r.sqft ? "· " + r.sqft + " sqft" : ""}</span></div>
-              <div className="text-xs text-indigo-500 mt-1">Click to log activity →</div>
+              <div className="text-sm text-slate-600 mt-1 font-medium">{money(r.price)} <span className="font-normal text-slate-400">
+                {r.sqft ? "· " + Number(r.sqft).toLocaleString() + " sf" : ""}{r.clear_height ? " · " + r.clear_height + "' clear" : ""}{r.dock_doors ? " · " + r.dock_doors + " docks" : ""}{r.sprinkler && r.sprinkler !== "none" ? " · " + r.sprinkler : ""}</span></div>
+              <div className="text-xs text-indigo-500 mt-1">Click for specs, links & activity →</div>
             </div>
             <div className="flex gap-1 shrink-0" onClick={e => e.stopPropagation()}>
               <button onClick={() => startEdit(r)} className="text-slate-400 hover:text-indigo-600 text-sm px-1">Edit</button>
@@ -314,58 +385,94 @@ function Properties() {
   );
 }
 
-// ---------- Deals (pipeline, linked to contact + property) ----------
-const STAGES = ["new", "showing", "offer", "contract", "closed"];
-function Deals() {
-  const { rows, add, update, remove } = useTable("deals");
-  const contacts = useTable("contacts").rows;
-  const properties = useTable("properties").rows;
-  const blank = { title: "", stage: "new", value: "", contact_id: "", property_id: "" };
-  const [f, setF] = useState(blank);
-  const clean = (o) => ({ ...o, value: o.value || null, contact_id: o.contact_id || null, property_id: o.property_id || null });
-  const submit = () => { if (!f.title) return; add(clean(f)); setF(blank); };
-
+// ---------- Close deal -> comp ----------
+function CloseDealModal({ deal, onClose, onDone }) {
+  const isLease = deal.deal_type === "lease";
+  const defComm = commissionOf(deal);
+  const [f, setF] = useState({ sale_price: deal.value || "", close_date: "", tenant: "", landlord: "", lease_rate: "", lease_term_months: "", commencement: "", expiration: "", escalations: "", options: "", commission: defComm || "", notes: "" });
+  const save = async () => {
+    const comp = { deal_id: deal.id, property_id: deal.property_id, contact_id: deal.contact_id, type: deal.deal_type, title: deal.title,
+      commission: num(f.commission), notes: f.notes || null,
+      sale_price: isLease ? null : num(f.sale_price), close_date: isLease ? null : (f.close_date || null),
+      tenant: isLease ? (f.tenant || null) : null, landlord: isLease ? (f.landlord || null) : null,
+      lease_rate: isLease ? num(f.lease_rate) : null, lease_term_months: isLease ? num(f.lease_term_months) : null,
+      commencement: isLease ? (f.commencement || null) : null, expiration: isLease ? (f.expiration || null) : null,
+      escalations: isLease ? (f.escalations || null) : null, options: isLease ? (f.options || null) : null };
+    await sb.from("comps").insert(comp);
+    await sb.from("deals").update({ stage: "closed" }).eq("id", deal.id);
+    onDone();
+  };
   return (
-    <div className="space-y-5">
-      <Card className="p-5">
-        <h3 className="font-semibold mb-3">New deal</h3>
-        <div className="grid md:grid-cols-5 gap-3">
-          <Field label="Title" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
-          <Field label="Value" type="number" value={f.value} onChange={e => setF({ ...f, value: e.target.value })} />
-          <Select label="Contact" value={f.contact_id} onChange={e => setF({ ...f, contact_id: e.target.value })}>
-            <option value="">— none —</option>
-            {contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-          <Select label="Property" value={f.property_id} onChange={e => setF({ ...f, property_id: e.target.value })}>
-            <option value="">— none —</option>
-            {properties.map(p => <option key={p.id} value={p.id}>{p.address}</option>)}
-          </Select>
-          <div className="flex items-end"><Btn onClick={submit} className="w-full">Add deal</Btn></div>
-        </div>
-      </Card>
+    <Modal onClose={onClose}>
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div className="font-bold flex items-center gap-2">Close deal: {deal.title} <Badge v={deal.deal_type} /></div>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+      </div>
+      <div className="p-5 space-y-3">
+        {isLease ? (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Tenant" value={f.tenant} onChange={e => setF({ ...f, tenant: e.target.value })} />
+              <Field label="Landlord" value={f.landlord} onChange={e => setF({ ...f, landlord: e.target.value })} />
+              <Field label="Lease rate ($/sf or /mo)" type="number" value={f.lease_rate} onChange={e => setF({ ...f, lease_rate: e.target.value })} />
+              <Field label="Term (months)" type="number" value={f.lease_term_months} onChange={e => setF({ ...f, lease_term_months: e.target.value })} />
+              <Field label="Commencement" type="date" value={f.commencement} onChange={e => setF({ ...f, commencement: e.target.value })} />
+              <Field label="Expiration" type="date" value={f.expiration} onChange={e => setF({ ...f, expiration: e.target.value })} />
+            </div>
+            <Field label="Escalations (e.g. 3%/yr)" value={f.escalations} onChange={e => setF({ ...f, escalations: e.target.value })} />
+            <Field label="Options (e.g. two 5-yr)" value={f.options} onChange={e => setF({ ...f, options: e.target.value })} />
+          </>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Sale price" type="number" value={f.sale_price} onChange={e => setF({ ...f, sale_price: e.target.value })} />
+            <Field label="Close date" type="date" value={f.close_date} onChange={e => setF({ ...f, close_date: e.target.value })} />
+          </div>
+        )}
+        <Field label="Commission ($)" type="number" value={f.commission} onChange={e => setF({ ...f, commission: e.target.value })} />
+        <Field label="Notes" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} />
+        <Btn onClick={save} className="w-full">Save comp & close deal</Btn>
+      </div>
+    </Modal>
+  );
+}
 
-      <div className="grid md:grid-cols-5 gap-3">
-        {STAGES.map(stage => {
-          const col = rows.filter(r => r.stage === stage);
-          const sum = col.reduce((a, r) => a + (Number(r.value) || 0), 0);
+// ---------- Pipeline board (one per deal type) ----------
+function Board({ title, type, rows, contacts, properties, update, remove, onCloseDeal }) {
+  const active = rows.filter(r => r.deal_type === type && r.stage !== "closed");
+  const totalComm = active.reduce((a, r) => a + commissionOf(r), 0);
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-2">
+        <h3 className="font-semibold">{title}</h3>
+        <Badge v={type} />
+        <span className="text-sm text-slate-500">Commission pipeline: <span className="font-semibold text-emerald-600">{money(totalComm) || "$0"}</span></span>
+      </div>
+      <div className="grid md:grid-cols-4 gap-3">
+        {PIPELINE_STAGES.map(stage => {
+          const col = active.filter(r => r.stage === stage);
+          const sum = col.reduce((a, r) => a + commissionOf(r), 0);
           return (
-            <div key={stage} className="bg-slate-100 rounded-xl p-2.5 min-h-[140px]">
+            <div key={stage} className="bg-slate-100 rounded-xl p-2.5 min-h-[120px]">
               <div className="flex items-center justify-between px-1 pb-2">
                 <span className="text-xs font-bold uppercase tracking-wide text-slate-500 capitalize">{stage}</span>
                 <span className="text-xs text-slate-400">{col.length}</span>
               </div>
-              {sum > 0 && <div className="text-xs text-slate-400 px-1 pb-1">{money(sum)}</div>}
+              {sum > 0 && <div className="text-xs text-slate-400 px-1 pb-1">{money(sum)} comm.</div>}
               {col.map(r => (
                 <Card key={r.id} className="p-2.5 mb-2">
                   <div className="text-sm font-medium">{r.title}</div>
-                  {r.value && <div className="text-xs text-emerald-600 font-semibold">{money(r.value)}</div>}
-                  {r.contact_id && <div className="text-xs text-slate-500 mt-1">👤 {nameById(contacts, r.contact_id).name || "—"}</div>}
-                  {r.property_id && <div className="text-xs text-slate-500">🏠 {nameById(properties, r.property_id).address || "—"}</div>}
-                  <div className="flex items-center justify-between mt-2">
+                  <div className="text-xs text-slate-500">{r.value ? money(r.value) : ""}{r.commission_pct ? " @ " + r.commission_pct + "%" : ""}</div>
+                  {r.commission_pct && r.value ? <div className="text-xs text-emerald-600 font-semibold">{money(commissionOf(r))} comm.</div> : null}
+                  {r.contact_id && <div className="text-xs text-slate-500 mt-1">👤 {byId(contacts, r.contact_id).name || "—"}</div>}
+                  {r.property_id && <div className="text-xs text-slate-500">🏠 {byId(properties, r.property_id).address || "—"}</div>}
+                  <div className="flex items-center justify-between mt-2 gap-1">
                     <select value={r.stage} onChange={e => update(r.id, { stage: e.target.value })} className="text-xs border border-slate-200 rounded px-1 py-0.5 bg-white">
-                      {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                      {PIPELINE_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <button onClick={() => remove(r.id)} className="text-slate-300 hover:text-red-500 text-xs">✕</button>
+                    <div className="flex gap-1">
+                      <button onClick={() => onCloseDeal(r)} className="text-xs text-emerald-600 hover:text-emerald-800 font-semibold">Close ✓</button>
+                      <button onClick={() => remove(r.id)} className="text-slate-300 hover:text-red-500 text-xs">✕</button>
+                    </div>
                   </div>
                 </Card>
               ))}
@@ -377,7 +484,85 @@ function Deals() {
   );
 }
 
-// ---------- Tasks (linked to contact + deal) ----------
+// ---------- Deals (split pipelines) ----------
+function Deals() {
+  const { rows, add, update, remove, reload } = useTable("deals");
+  const contacts = useTable("contacts").rows;
+  const properties = useTable("properties").rows;
+  const blank = { title: "", deal_type: "sale", stage: "new", value: "", commission_pct: "", contact_id: "", property_id: "" };
+  const [f, setF] = useState(blank);
+  const [closing, setClosing] = useState(null);
+  const clean = (o) => ({ ...o, value: num(o.value), commission_pct: num(o.commission_pct), contact_id: o.contact_id || null, property_id: o.property_id || null });
+  const submit = () => { if (!f.title) return; add(clean(f)); setF(blank); };
+  return (
+    <div className="space-y-6">
+      {closing && <CloseDealModal deal={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); reload(); }} />}
+      <Card className="p-5">
+        <h3 className="font-semibold mb-3">New deal</h3>
+        <div className="grid md:grid-cols-6 gap-3">
+          <Field label="Title" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
+          <Select label="Type" value={f.deal_type} onChange={e => setF({ ...f, deal_type: e.target.value })}><option value="sale">sale</option><option value="lease">lease</option></Select>
+          <Field label="Deal value" type="number" value={f.value} onChange={e => setF({ ...f, value: e.target.value })} />
+          <Field label="Commission %" type="number" value={f.commission_pct} onChange={e => setF({ ...f, commission_pct: e.target.value })} />
+          <Select label="Contact" value={f.contact_id} onChange={e => setF({ ...f, contact_id: e.target.value })}><option value="">— none —</option>{contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+          <Select label="Property" value={f.property_id} onChange={e => setF({ ...f, property_id: e.target.value })}><option value="">— none —</option>{properties.map(p => <option key={p.id} value={p.id}>{p.address}</option>)}</Select>
+        </div>
+        <Btn onClick={submit} className="mt-3">Add deal</Btn>
+      </Card>
+      <Board title="Sales pipeline" type="sale" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} />
+      <Board title="Leases pipeline" type="lease" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} />
+    </div>
+  );
+}
+
+// ---------- Comps ----------
+function Comps() {
+  const { rows, remove } = useTable("comps");
+  const properties = useTable("properties").rows;
+  const sales = rows.filter(r => r.type === "sale"), leases = rows.filter(r => r.type === "lease");
+  const propAddr = (id) => byId(properties, id).address;
+  const SaleCard = (c) => (
+    <Card key={c.id} className="p-4 flex justify-between items-start">
+      <div>
+        <div className="font-medium">{c.title || propAddr(c.property_id) || "Sale"} <Badge v="sale" /></div>
+        {c.property_id && <div className="text-sm text-slate-500">🏠 {propAddr(c.property_id)}</div>}
+        <div className="text-sm text-slate-600 mt-1">{money(c.sale_price)} {c.close_date ? "· closed " + c.close_date : ""}</div>
+        {c.commission ? <div className="text-sm text-emerald-600">Commission {money(c.commission)}</div> : null}
+        {c.notes && <div className="text-sm text-slate-400 mt-1">{c.notes}</div>}
+      </div>
+      <button onClick={() => remove(c.id)} className="text-slate-300 hover:text-red-500 text-sm">✕</button>
+    </Card>
+  );
+  const LeaseCard = (c) => (
+    <Card key={c.id} className="p-4 flex justify-between items-start">
+      <div>
+        <div className="font-medium">{c.title || propAddr(c.property_id) || "Lease"} <Badge v="lease" /></div>
+        {c.property_id && <div className="text-sm text-slate-500">🏠 {propAddr(c.property_id)}</div>}
+        <div className="text-sm text-slate-600 mt-1">{[c.tenant && "Tenant: " + c.tenant, c.landlord && "Landlord: " + c.landlord].filter(Boolean).join(" · ")}</div>
+        <div className="text-sm text-slate-600">{c.lease_rate ? money(c.lease_rate) + " rate" : ""}{c.lease_term_months ? " · " + c.lease_term_months + " mo" : ""}{c.expiration ? " · exp " + c.expiration : ""}</div>
+        <div className="text-sm text-slate-500">{[c.escalations && "Esc: " + c.escalations, c.options && "Options: " + c.options].filter(Boolean).join(" · ")}</div>
+        {c.commission ? <div className="text-sm text-emerald-600">Commission {money(c.commission)}</div> : null}
+      </div>
+      <button onClick={() => remove(c.id)} className="text-slate-300 hover:text-red-500 text-sm">✕</button>
+    </Card>
+  );
+  return (
+    <div className="grid lg:grid-cols-2 gap-6">
+      <div className="space-y-3">
+        <h3 className="font-semibold">Sale comps <span className="text-slate-400 text-sm">({sales.length})</span></h3>
+        {sales.length === 0 && <p className="text-slate-400 text-sm">No sale comps yet. Close a sale deal to add one.</p>}
+        {sales.map(SaleCard)}
+      </div>
+      <div className="space-y-3">
+        <h3 className="font-semibold">Lease comps <span className="text-slate-400 text-sm">({leases.length})</span></h3>
+        {leases.length === 0 && <p className="text-slate-400 text-sm">No lease comps yet. Close a lease deal to add one.</p>}
+        {leases.map(LeaseCard)}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Tasks ----------
 function Tasks() {
   const { rows, add, update, remove } = useTable("tasks");
   const contacts = useTable("contacts").rows;
@@ -387,36 +572,24 @@ function Tasks() {
   const clean = (o) => ({ ...o, due_date: o.due_date || null, contact_id: o.contact_id || null, deal_id: o.deal_id || null });
   const submit = () => { if (!f.title) return; add(clean(f)); setF(blank); };
   const openT = rows.filter(r => !r.done), doneT = rows.filter(r => r.done);
-
   const Row = (r) => (
     <Card key={r.id} className="p-3 flex items-center gap-3">
       <input type="checkbox" checked={r.done} onChange={e => update(r.id, { done: e.target.checked })} className="h-4 w-4 accent-indigo-600" />
       <div className="flex-1">
         <div className={cls("text-sm", r.done && "line-through text-slate-400")}>{r.title}</div>
-        <div className="text-xs text-slate-400 flex gap-2 flex-wrap">
-          {r.due_date && <span>📅 {r.due_date}</span>}
-          {r.contact_id && <span>👤 {nameById(contacts, r.contact_id).name}</span>}
-          {r.deal_id && <span>💼 {nameById(deals, r.deal_id).title}</span>}
-        </div>
+        <div className="text-xs text-slate-400 flex gap-2 flex-wrap">{r.due_date && <span>📅 {r.due_date}</span>}{r.contact_id && <span>👤 {byId(contacts, r.contact_id).name}</span>}{r.deal_id && <span>💼 {byId(deals, r.deal_id).title}</span>}</div>
       </div>
       <button onClick={() => remove(r.id)} className="text-slate-300 hover:text-red-500 text-sm">✕</button>
     </Card>
   );
-
   return (
     <div className="max-w-3xl space-y-4">
       <Card className="p-5">
         <div className="grid md:grid-cols-4 gap-3">
           <Field label="Task" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
           <Field label="Due date" type="date" value={f.due_date} onChange={e => setF({ ...f, due_date: e.target.value })} />
-          <Select label="Contact" value={f.contact_id} onChange={e => setF({ ...f, contact_id: e.target.value })}>
-            <option value="">— none —</option>
-            {contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-          <Select label="Deal" value={f.deal_id} onChange={e => setF({ ...f, deal_id: e.target.value })}>
-            <option value="">— none —</option>
-            {deals.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
-          </Select>
+          <Select label="Contact" value={f.contact_id} onChange={e => setF({ ...f, contact_id: e.target.value })}><option value="">— none —</option>{contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+          <Select label="Deal" value={f.deal_id} onChange={e => setF({ ...f, deal_id: e.target.value })}><option value="">— none —</option>{deals.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}</Select>
         </div>
         <Btn onClick={submit} className="mt-3">Add task</Btn>
       </Card>
@@ -432,37 +605,33 @@ function Tasks() {
 
 // ---------- Dashboard ----------
 function Stat({ label, value, accent }) {
-  return (
-    <Card className="p-5">
-      <div className={cls("text-3xl font-bold", accent)}>{value}</div>
-      <div className="text-sm text-slate-500 mt-1">{label}</div>
-    </Card>
-  );
+  return <Card className="p-5"><div className={cls("text-3xl font-bold", accent)}>{value}</div><div className="text-sm text-slate-500 mt-1">{label}</div></Card>;
 }
 function Dashboard({ go }) {
   const contacts = useTable("contacts").rows;
   const properties = useTable("properties").rows;
   const deals = useTable("deals").rows;
   const tasks = useTable("tasks").rows;
-  const pipeline = deals.filter(d => d.stage !== "closed").reduce((a, d) => a + (Number(d.value) || 0), 0);
+  const openDeals = deals.filter(d => d.stage !== "closed");
+  const commPipeline = openDeals.reduce((a, d) => a + commissionOf(d), 0);
   const openTasks = tasks.filter(t => !t.done);
   return (
     <div className="space-y-5">
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Stat label="Contacts" value={contacts.length} accent="text-indigo-600" />
         <Stat label="Active listings" value={properties.filter(p => p.status === "active").length} accent="text-sky-600" />
-        <Stat label="Open deals" value={deals.filter(d => d.stage !== "closed").length} accent="text-violet-600" />
-        <Stat label="Pipeline value" value={money(pipeline) || "$0"} accent="text-emerald-600" />
+        <Stat label="Open deals" value={openDeals.length} accent="text-violet-600" />
+        <Stat label="Commission pipeline" value={money(commPipeline) || "$0"} accent="text-emerald-600" />
       </div>
       <div className="grid lg:grid-cols-2 gap-5">
         <Card className="p-5">
-          <h3 className="font-semibold mb-3">Deals by stage</h3>
-          {STAGES.map(s => {
-            const n = deals.filter(d => d.stage === s).length;
-            const pct = deals.length ? (n / deals.length) * 100 : 0;
+          <h3 className="font-semibold mb-3">Open deals by type</h3>
+          {["sale", "lease"].map(t => {
+            const n = openDeals.filter(d => d.deal_type === t).length;
+            const pct = openDeals.length ? (n / openDeals.length) * 100 : 0;
             return (
-              <div key={s} className="mb-2">
-                <div className="flex justify-between text-xs text-slate-500 capitalize"><span>{s}</span><span>{n}</span></div>
+              <div key={t} className="mb-2">
+                <div className="flex justify-between text-xs text-slate-500 capitalize"><span>{t}</span><span>{n}</span></div>
                 <div className="h-2 bg-slate-100 rounded-full mt-1"><div className="h-2 bg-indigo-500 rounded-full" style={{ width: pct + "%" }}></div></div>
               </div>
             );
@@ -471,11 +640,7 @@ function Dashboard({ go }) {
         <Card className="p-5">
           <h3 className="font-semibold mb-3">Upcoming tasks</h3>
           {openTasks.length === 0 && <p className="text-sm text-slate-400">Nothing open. 🎉</p>}
-          {openTasks.slice(0, 6).map(t => (
-            <div key={t.id} className="flex justify-between text-sm py-1.5 border-b border-slate-50 last:border-0">
-              <span>{t.title}</span><span className="text-slate-400 text-xs">{t.due_date || ""}</span>
-            </div>
-          ))}
+          {openTasks.slice(0, 6).map(t => <div key={t.id} className="flex justify-between text-sm py-1.5 border-b border-slate-50 last:border-0"><span>{t.title}</span><span className="text-slate-400 text-xs">{t.due_date || ""}</span></div>)}
           <button onClick={() => go("tasks")} className="text-indigo-600 text-sm mt-3 hover:underline">View all tasks →</button>
         </Card>
       </div>
@@ -484,7 +649,7 @@ function Dashboard({ go }) {
 }
 
 // ---------- App shell ----------
-const TABS = [["dashboard", "Dashboard"], ["contacts", "Contacts"], ["properties", "Properties"], ["deals", "Pipeline"], ["tasks", "Tasks"]];
+const TABS = [["dashboard", "Dashboard"], ["contacts", "Contacts"], ["properties", "Properties"], ["deals", "Pipeline"], ["comps", "Comps"], ["tasks", "Tasks"]];
 function App({ session }) {
   const [tab, setTab] = useState("dashboard");
   return (
@@ -499,11 +664,7 @@ function App({ session }) {
         </div>
         <div className="max-w-6xl mx-auto px-4 flex gap-1 overflow-x-auto">
           {TABS.map(([key, label]) => (
-            <button key={key} onClick={() => setTab(key)}
-              className={cls("px-3 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap",
-                tab === key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800")}>
-              {label}
-            </button>
+            <button key={key} onClick={() => setTab(key)} className={cls("px-3 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap", tab === key ? "border-indigo-600 text-indigo-600" : "border-transparent text-slate-500 hover:text-slate-800")}>{label}</button>
           ))}
         </div>
       </header>
@@ -512,8 +673,32 @@ function App({ session }) {
         {tab === "contacts" && <Contacts />}
         {tab === "properties" && <Properties />}
         {tab === "deals" && <Deals />}
+        {tab === "comps" && <Comps />}
         {tab === "tasks" && <Tasks />}
       </main>
+    </div>
+  );
+}
+
+function Login() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
+  const send = async () => { setErr(""); const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } }); if (error) setErr(error.message); else setSent(true); };
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-indigo-50 to-slate-100">
+      <Card className="w-full max-w-sm p-7">
+        <div className="text-3xl">🏡</div>
+        <h1 className="text-xl font-bold mt-2">Real Estate CRM</h1>
+        <p className="text-sm text-slate-500 mt-1">Sign in with your email — we'll send a magic link.</p>
+        {sent ? <p className="mt-5 text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3">Check your inbox and click the link to sign in.</p> : (
+          <div className="mt-5 space-y-3">
+            <Field label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" />
+            <Btn onClick={send} className="w-full">Send magic link</Btn>
+            {err && <p className="text-sm text-red-600">{err}</p>}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -527,36 +712,6 @@ function Root() {
   }, []);
   if (session === undefined) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
   return session ? <App session={session} /> : <Login />;
-}
-
-// login (kept at bottom for readability)
-function Login() {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [err, setErr] = useState("");
-  const send = async () => {
-    setErr("");
-    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href } });
-    if (error) setErr(error.message); else setSent(true);
-  };
-  return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-indigo-50 to-slate-100">
-      <Card className="w-full max-w-sm p-7">
-        <div className="text-3xl">🏡</div>
-        <h1 className="text-xl font-bold mt-2">Real Estate CRM</h1>
-        <p className="text-sm text-slate-500 mt-1">Sign in with your email — we'll send a magic link.</p>
-        {sent ? (
-          <p className="mt-5 text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3">Check your inbox and click the link to sign in.</p>
-        ) : (
-          <div className="mt-5 space-y-3">
-            <Field label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" />
-            <Btn onClick={send} className="w-full">Send magic link</Btn>
-            {err && <p className="text-sm text-red-600">{err}</p>}
-          </div>
-        )}
-      </Card>
-    </div>
-  );
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
