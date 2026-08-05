@@ -436,10 +436,47 @@ function CloseDealModal({ deal, onClose, onDone }) {
   );
 }
 
+// ---------- Edit deal ----------
+function EditDealModal({ deal, contacts, properties, onClose, onSave }) {
+  const [f, setF] = useState({
+    title: deal.title || "", deal_type: deal.deal_type || "sale", stage: deal.stage || "new",
+    value: deal.value ?? "", commission_pct: deal.commission_pct ?? "",
+    contact_id: deal.contact_id || "", property_id: deal.property_id || ""
+  });
+  const save = async () => {
+    if (!f.title) return;
+    await onSave(deal.id, { ...f, value: num(f.value), commission_pct: num(f.commission_pct), contact_id: f.contact_id || null, property_id: f.property_id || null });
+    onClose();
+  };
+  return (
+    <Modal onClose={onClose}>
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div className="font-bold">Edit deal</div>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+      </div>
+      <div className="p-5 space-y-3">
+        <Field label="Title" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
+        <div className="grid grid-cols-2 gap-3">
+          <Select label="Type" value={f.deal_type} onChange={e => setF({ ...f, deal_type: e.target.value })}><option value="sale">sale</option><option value="lease">lease</option></Select>
+          <Select label="Stage" value={f.stage} onChange={e => setF({ ...f, stage: e.target.value })}>{PIPELINE_STAGES.map(s => <option key={s}>{s}</option>)}</Select>
+          <Field label="Deal value" type="number" value={f.value} onChange={e => setF({ ...f, value: e.target.value })} />
+          <Field label="Commission %" type="number" value={f.commission_pct} onChange={e => setF({ ...f, commission_pct: e.target.value })} />
+        </div>
+        <Select label="Contact" value={f.contact_id} onChange={e => setF({ ...f, contact_id: e.target.value })}><option value="">— none —</option>{contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+        <Select label="Property" value={f.property_id} onChange={e => setF({ ...f, property_id: e.target.value })}><option value="">— none —</option>{properties.map(p => <option key={p.id} value={p.id}>{p.address}</option>)}</Select>
+        <Btn onClick={save} className="w-full">Save changes</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 // ---------- Pipeline board (one per deal type) ----------
-function Board({ title, type, rows, contacts, properties, update, remove, onCloseDeal }) {
+function Board({ title, type, rows, contacts, properties, update, remove, onCloseDeal, onEditDeal }) {
   const active = rows.filter(r => r.deal_type === type && r.stage !== "closed");
   const totalComm = active.reduce((a, r) => a + commissionOf(r), 0);
+  const [dragId, setDragId] = useState(null);
+  const [over, setOver] = useState(null);
+  const drop = (stage) => { if (dragId) { update(dragId, { stage }); } setDragId(null); setOver(null); };
   return (
     <div>
       <div className="flex items-center gap-3 mb-2">
@@ -452,14 +489,21 @@ function Board({ title, type, rows, contacts, properties, update, remove, onClos
           const col = active.filter(r => r.stage === stage);
           const sum = col.reduce((a, r) => a + commissionOf(r), 0);
           return (
-            <div key={stage} className="bg-slate-100 rounded-xl p-2.5 min-h-[120px]">
+            <div key={stage}
+              onDragOver={e => { e.preventDefault(); if (over !== stage) setOver(stage); }}
+              onDragLeave={() => setOver(o => o === stage ? null : o)}
+              onDrop={() => drop(stage)}
+              className={cls("rounded-xl p-2.5 min-h-[120px] transition-colors", over === stage ? "bg-indigo-100 ring-2 ring-indigo-300" : "bg-slate-100")}>
               <div className="flex items-center justify-between px-1 pb-2">
                 <span className="text-xs font-bold uppercase tracking-wide text-slate-500 capitalize">{stage}</span>
                 <span className="text-xs text-slate-400">{col.length}</span>
               </div>
               {sum > 0 && <div className="text-xs text-slate-400 px-1 pb-1">{money(sum)} comm.</div>}
               {col.map(r => (
-                <Card key={r.id} className="p-2.5 mb-2">
+                <Card key={r.id} draggable
+                  onDragStart={() => setDragId(r.id)}
+                  onDragEnd={() => { setDragId(null); setOver(null); }}
+                  className={cls("p-2.5 mb-2 cursor-grab active:cursor-grabbing", dragId === r.id && "opacity-40")}>
                   <div className="text-sm font-medium">{r.title}</div>
                   <div className="text-xs text-slate-500">{r.value ? money(r.value) : ""}{r.commission_pct ? " @ " + r.commission_pct + "%" : ""}</div>
                   {r.commission_pct && r.value ? <div className="text-xs text-emerald-600 font-semibold">{money(commissionOf(r))} comm.</div> : null}
@@ -469,7 +513,8 @@ function Board({ title, type, rows, contacts, properties, update, remove, onClos
                     <select value={r.stage} onChange={e => update(r.id, { stage: e.target.value })} className="text-xs border border-slate-200 rounded px-1 py-0.5 bg-white">
                       {PIPELINE_STAGES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <div className="flex gap-1">
+                    <div className="flex gap-1.5 items-center">
+                      <button onClick={() => onEditDeal(r)} className="text-xs text-slate-400 hover:text-indigo-600">Edit</button>
                       <button onClick={() => onCloseDeal(r)} className="text-xs text-emerald-600 hover:text-emerald-800 font-semibold">Close ✓</button>
                       <button onClick={() => remove(r.id)} className="text-slate-300 hover:text-red-500 text-xs">✕</button>
                     </div>
@@ -492,11 +537,13 @@ function Deals() {
   const blank = { title: "", deal_type: "sale", stage: "new", value: "", commission_pct: "", contact_id: "", property_id: "" };
   const [f, setF] = useState(blank);
   const [closing, setClosing] = useState(null);
+  const [editingDeal, setEditingDeal] = useState(null);
   const clean = (o) => ({ ...o, value: num(o.value), commission_pct: num(o.commission_pct), contact_id: o.contact_id || null, property_id: o.property_id || null });
   const submit = () => { if (!f.title) return; add(clean(f)); setF(blank); };
   return (
     <div className="space-y-6">
       {closing && <CloseDealModal deal={closing} onClose={() => setClosing(null)} onDone={() => { setClosing(null); reload(); }} />}
+      {editingDeal && <EditDealModal deal={editingDeal} contacts={contacts} properties={properties} onClose={() => setEditingDeal(null)} onSave={update} />}
       <Card className="p-5">
         <h3 className="font-semibold mb-3">New deal</h3>
         <div className="grid md:grid-cols-6 gap-3">
@@ -509,8 +556,8 @@ function Deals() {
         </div>
         <Btn onClick={submit} className="mt-3">Add deal</Btn>
       </Card>
-      <Board title="Sales pipeline" type="sale" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} />
-      <Board title="Leases pipeline" type="lease" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} />
+      <Board title="Sales pipeline" type="sale" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} onEditDeal={setEditingDeal} />
+      <Board title="Leases pipeline" type="lease" rows={rows} contacts={contacts} properties={properties} update={update} remove={remove} onCloseDeal={setClosing} onEditDeal={setEditingDeal} />
     </div>
   );
 }
